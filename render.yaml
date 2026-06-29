@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: deezyanax
+    runtime: python
+    plan: starter
+    rootDir: .
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: cd backend && uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: TELEGRAM_API_ID
+        sync: false
+      - key: TELEGRAM_API_HASH
+        sync: false
+      - key: TELEGRAM_PHONE
+        sync: false
+      - key: TELEGRAM_SESSION_STRING
+        sync: false
+      - key: DEEZYANAX_SAVE_DIR
+        value: /tmp/deezyanax-folders

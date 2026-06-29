@@ -4,7 +4,6 @@ services:
     runtime: python
     plan: starter
     rootDir: .
-    runtimeVersion: 3.11.9
     buildCommand: pip install -r backend/requirements.txt
     startCommand: cd backend && uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
@@ -16,5 +15,7 @@ services:
         sync: false
       - key: TELEGRAM_SESSION_STRING
         sync: false
+      - key: PYTHON_VERSION
+        value: 3.11.9
       - key: DEEZYANAX_SAVE_DIR
         value: /tmp/deezyanax-folders

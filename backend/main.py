@@ -19,7 +19,7 @@ import aiohttp
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from telethon import TelegramClient, events
@@ -1405,6 +1405,17 @@ async def get_history():
             "has_buttons": bool(msg.buttons),
         })
     return {"messages": messages}
+
+
+@app.get("/favicon.ico")
+async def favicon():
+    svg = (
+        "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'>"
+        "<rect width='64' height='64' rx='14' fill='#7c5cfc'/>"
+        "<path d='M23 18v24.5a7 7 0 1 1-4-6.3V15h27v20.5a7 7 0 1 1-4-6.3V18H23z' fill='white'/>"
+        "</svg>"
+    )
+    return Response(content=svg, media_type="image/svg+xml")
 
 
 if FRONTEND_DIR.exists():

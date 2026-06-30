@@ -444,6 +444,11 @@ def job_counts(job: dict) -> dict:
         "expected": job.get("expected_total") or len(tracks),
     }
 
+def job_has_complete_track_list(job: dict) -> bool:
+    counts = job_counts(job)
+    expected = int(job.get("expected_total") or 0)
+    return expected > 0 and (counts["received"] + counts["skipped"]) >= expected
+
 def refresh_job_status(job: dict) -> None:
     counts = job_counts(job)
     job["counts"] = counts
@@ -1285,7 +1290,7 @@ async def start_job_archive(job_id: str, mode: str = "flat"):
 
     mode = "folder" if mode == "folder" else "flat"
     refresh_job_status(job)
-    if not job.get("bot_finished"):
+    if not job.get("bot_finished") and not job_has_complete_track_list(job):
         raise HTTPException(409, "Espera a que el bot termine con Finished.")
 
     tracks = [t for t in job.get("tracks", []) if t.get("status") != "error"]
@@ -1327,7 +1332,7 @@ async def start_job_folder(job_id: str):
         raise HTTPException(404, "Job no encontrado o expirado")
 
     refresh_job_status(job)
-    if not job.get("bot_finished"):
+    if not job.get("bot_finished") and not job_has_complete_track_list(job):
         raise HTTPException(409, "Espera a que el bot termine con Finished.")
 
     tracks = [t for t in job.get("tracks", []) if t.get("status") != "error"]

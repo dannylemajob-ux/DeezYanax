@@ -15,6 +15,12 @@ services:
         sync: false
       - key: TELEGRAM_SESSION_STRING
         sync: false
+      - key: DEEZYANAX_AUTH_USER
+        sync: false
+      - key: DEEZYANAX_AUTH_PASSWORD
+        sync: false
+      - key: DEEZYANAX_AUTH_SECRET
+        sync: false
       - key: PYTHON_VERSION
         value: 3.11.9
       - key: DEEZYANAX_SAVE_DIR

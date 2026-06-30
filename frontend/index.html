@@ -1473,12 +1473,16 @@ async function pollJob(jobId) {
     renderJob(data.data);
 
     const counts = data.data.counts || {};
-    const complete = data.data.status === 'finished'
+    const expectedCount = Number(counts.expected || data.data.expected_total || 0);
+    const receivedCount = Number(counts.received || 0);
+    const skippedCount = Number(counts.skipped || 0);
+    const allExpectedReceived = expectedCount > 0 && (receivedCount + skippedCount) >= expectedCount;
+    const complete = (data.data.status === 'finished' || allExpectedReceived)
       && Number(counts.downloading || 0) === 0;
     if (complete || data.data.status === 'error') {
       clearInterval(activeJobTimer);
       activeJobTimer = null;
-      if (data.data.status === 'finished') toast('Playlist lista', 'success');
+      if (complete) toast('Playlist lista', 'success');
     }
   } catch (e) {
     clearInterval(activeJobTimer);
@@ -1499,8 +1503,9 @@ function renderJob(job) {
   const skippedCount = Number(counts.skipped || 0);
   const expectedCount = Number(counts.expected || job.expected_total || tracks.length || 0);
   const isDone = job.status === 'finished';
+  const allExpectedReceived = expectedCount > 0 && (receivedCount + skippedCount) >= expectedCount;
   const showBotOptions = !tracks.length || job.status === 'waiting_action';
-  const showFinalDownload = isDone && receivedCount > 0;
+  const showFinalDownload = (isDone || allExpectedReceived) && receivedCount > 0;
   const processedPct = expectedCount ? Math.round((receivedCount / expectedCount) * 100) : 0;
   const savedPct = receivedCount ? Math.round((readyCount / receivedCount) * 100) : 0;
   const progressPct = showFinalDownload ? Math.max(processedPct, savedPct) : processedPct;
@@ -1531,7 +1536,7 @@ function renderJob(job) {
         <div class="job-title">${countLabel}</div>
         <div class="job-status">${escapeHtml(job.message || job.status || 'Procesando...')}${receivedLabel}${folderStatus || folderArchiveStatus}${zipStatus}</div>
       </div>
-      <div class="job-status">${isDone ? 'FINISHED' : 'EN PROCESO'}</div>
+      <div class="job-status">${isDone ? 'FINISHED' : (allExpectedReceived ? 'LISTA' : 'EN PROCESO')}</div>
     </div>`;
 
   const botMessages = job.bot_messages || [];

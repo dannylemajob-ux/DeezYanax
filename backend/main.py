@@ -3,8 +3,12 @@ DeezYanax Backend — FastAPI + Telethon
 Actúa como puente entre la web y @deezload2bot en Telegram
 """
 import asyncio
+import base64
+import hmac
+import hashlib
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import time
@@ -17,9 +21,9 @@ from typing import Optional
 import aiofiles
 import aiohttp
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from telethon import TelegramClient, events
@@ -53,6 +57,11 @@ LOCAL_SAVE_DIR = Path(os.getenv("DEEZYANAX_SAVE_DIR", str(Path.home() / "Downloa
 FOLDERS_DIR = LOCAL_SAVE_DIR
 FOLDERS_DIR.mkdir(parents=True, exist_ok=True)
 MAX_CONCURRENT_DOWNLOADS = 5
+AUTH_USER = os.getenv("DEEZYANAX_AUTH_USER", "yanax")
+AUTH_PASSWORD = os.getenv("DEEZYANAX_AUTH_PASSWORD", "")
+AUTH_SECRET = os.getenv("DEEZYANAX_AUTH_SECRET", API_HASH or SESSION_STRING or "deezyanax-local-secret")
+AUTH_COOKIE = "deezyanax_session"
+AUTH_TTL_SECONDS = 60 * 60 * 24 * 7
 
 # ── Estado global ─────────────────────────────────────────────────────────────
 client: TelegramClient = None
@@ -95,6 +104,10 @@ class SelectRequest(BaseModel):
 
 class QualityRequest(BaseModel):
     quality: str  # FLAC | MP3_320 | MP3_128
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
 
 class InlineButton(BaseModel):
     text: str
@@ -166,10 +179,48 @@ app = FastAPI(title="DeezYanax API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?|https://deezyanax\.onrender\.com",
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+def make_auth_token(username: str) -> str:
+    expires = str(int(time.time()) + AUTH_TTL_SECONDS)
+    nonce = secrets.token_urlsafe(12)
+    payload = f"{username}:{expires}:{nonce}"
+    sig = hmac.new(AUTH_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    raw = f"{payload}:{sig}".encode()
+    return base64.urlsafe_b64encode(raw).decode()
+
+def verify_auth_token(token: str) -> bool:
+    try:
+        raw = base64.urlsafe_b64decode(token.encode()).decode()
+        username, expires, nonce, sig = raw.split(":", 3)
+        if username != AUTH_USER or int(expires) < int(time.time()):
+            return False
+    except Exception:
+        return False
+    payload = f"{username}:{expires}:{nonce}"
+    expected = hmac.new(AUTH_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(sig, expected)
+
+def is_public_path(path: str) -> bool:
+    return (
+        path == "/health"
+        or path == "/favicon.ico"
+        or path.startswith("/api/auth/")
+    )
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    path = request.url.path
+    protected = path.startswith("/api/") or path.startswith("/downloads/")
+    if protected and not is_public_path(path):
+        token = request.cookies.get(AUTH_COOKIE, "")
+        if not verify_auth_token(token):
+            return JSONResponse({"detail": "No autenticado"}, status_code=401)
+    return await call_next(request)
 
 # ── Handler de mensajes del bot ───────────────────────────────────────────────
 async def handle_bot_message(event):
@@ -951,6 +1002,41 @@ async def health():
         "telegram_connected": connected,
         "quality": current_quality,
     }
+
+
+@app.get("/api/auth/session")
+async def auth_session(request: Request):
+    token = request.cookies.get(AUTH_COOKIE, "")
+    return {"authenticated": verify_auth_token(token), "username": AUTH_USER}
+
+
+@app.post("/api/auth/login")
+async def auth_login(req: LoginRequest, request: Request):
+    if not AUTH_PASSWORD:
+        raise HTTPException(503, "Login no configurado en el servidor")
+    valid_user = hmac.compare_digest(req.username, AUTH_USER)
+    valid_password = hmac.compare_digest(req.password, AUTH_PASSWORD)
+    if not (valid_user and valid_password):
+        raise HTTPException(401, "Usuario o password incorrecto")
+
+    response = JSONResponse({"authenticated": True, "username": AUTH_USER})
+    response.set_cookie(
+        key=AUTH_COOKIE,
+        value=make_auth_token(AUTH_USER),
+        max_age=AUTH_TTL_SECONDS,
+        httponly=True,
+        secure=request.url.scheme == "https",
+        samesite="lax",
+        path="/",
+    )
+    return response
+
+
+@app.post("/api/auth/logout")
+async def auth_logout():
+    response = JSONResponse({"authenticated": False})
+    response.delete_cookie(AUTH_COOKIE, path="/")
+    return response
 
 
 @app.post("/api/quality")

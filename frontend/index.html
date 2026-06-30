@@ -1063,6 +1063,10 @@ function isLocalApi() {
   }
 }
 
+function canPickDirectory() {
+  return window.isSecureContext && typeof window.showDirectoryPicker === 'function';
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
   checkHealth();
@@ -1306,6 +1310,10 @@ function renderJob(job) {
     ? ` · ZIP: ${String(archive.status).toUpperCase()} ${archive.progress ? `${archive.progress}%` : ''}`
     : '';
   const folder = job.folder || {};
+  const folderArchive = job.folder_archive || {};
+  const folderArchiveStatus = folderArchive.status && folderArchive.status !== 'idle'
+    ? ` · CARPETA: ${String(folderArchive.status).toUpperCase()} ${folderArchive.progress ? `${folderArchive.progress}%` : ''}`
+    : '';
   const folderStatus = folder.status && folder.status !== 'idle'
     ? ` · CARPETA: ${String(folder.status).toUpperCase()} ${folder.progress ? `${folder.progress}%` : ''}`
     : '';
@@ -1315,7 +1323,7 @@ function renderJob(job) {
     <div class="job-head">
       <div>
         <div class="job-title">${countLabel}</div>
-        <div class="job-status">${escapeHtml(job.message || job.status || 'Procesando...')}${receivedLabel}${folderStatus}${zipStatus}</div>
+        <div class="job-status">${escapeHtml(job.message || job.status || 'Procesando...')}${receivedLabel}${folderStatus || folderArchiveStatus}${zipStatus}</div>
       </div>
       <div class="job-status">${isDone ? 'FINISHED' : 'EN PROCESO'}</div>
     </div>`;
@@ -1370,7 +1378,7 @@ function renderJob(job) {
       <div class="playlist-finish">
         <div>
           <div class="playlist-finish-title">Tu playlist esta lista</div>
-          <div class="playlist-finish-sub">${receivedCount} canciones procesadas${skippedCount ? `, ${skippedCount} omitidas por el bot` : ''}. Guardarlas como carpeta evita crear un ZIP extra.</div>
+          <div class="playlist-finish-sub">${receivedCount} canciones procesadas${skippedCount ? `, ${skippedCount} omitidas por el bot` : ''}. En Brave/Render se descarga como paquete con carpeta interna.</div>
         </div>
         <div class="save-bar-actions">
           <button class="download-btn final" onclick="saveSongsToFolder('${escapeAttr(jobId)}')">DESCARGA TU CARPETA</button>
@@ -1453,13 +1461,13 @@ async function saveSongsToFolder(jobId) {
     return;
   }
 
-  if (!window.showDirectoryPicker) {
+  if (!canPickDirectory()) {
     if (isLocalApi()) {
       toast('Tu navegador no permite elegir carpeta; guardando en Descargas.', 'info');
       await saveSongsToBackendFolder(jobId);
     } else {
-      toast('Tu navegador no permite elegir carpeta; descargando ZIP.', 'info');
-      await compressPlaylist(jobId);
+      toast('Tu navegador no permite elegir carpeta; descargando paquete con carpeta interna.', 'info');
+      await downloadArchivePackage(jobId, 'folder');
     }
     return;
   }
@@ -1537,17 +1545,23 @@ async function saveSongsToBackendFolder(jobId) {
 }
 
 async function compressPlaylist(jobId) {
+  await downloadArchivePackage(jobId, 'flat');
+}
+
+async function downloadArchivePackage(jobId, mode = 'flat') {
   const job = latestJobs[jobId];
   if (!job) return;
 
   const playlistTitle = safeFileName(job.playlist_title || 'Playlist');
-  toast('Creando ZIP local...', 'info');
+  const isFolderPackage = mode === 'folder';
+  const modeParam = isFolderPackage ? '?mode=folder' : '';
+  toast(isFolderPackage ? 'Preparando carpeta para descargar...' : 'Creando ZIP local...', 'info');
   startJobPolling(jobId);
 
   try {
-    const startResponse = await fetch(`${API}/api/job/${jobId}/archive/start`, { method: 'POST' });
+    const startResponse = await fetch(`${API}/api/job/${jobId}/archive/start${modeParam}`, { method: 'POST' });
     if (!startResponse.ok) {
-      let message = 'No se pudo iniciar el ZIP local';
+      let message = isFolderPackage ? 'No se pudo iniciar la descarga de carpeta' : 'No se pudo iniciar el ZIP local';
       try {
         const error = await startResponse.json();
         message = error.detail || message;
@@ -1557,23 +1571,20 @@ async function compressPlaylist(jobId) {
 
     let archive = (await startResponse.json()).data;
     while (archive.status !== 'ready') {
-      if (archive.status === 'error') throw new Error(archive.error || 'No se pudo crear el ZIP');
-      toast(`ZIP ${archive.progress || 0}% (${archive.completed || 0}/${archive.total || 0})`, 'info');
+      if (archive.status === 'error') throw new Error(archive.error || (isFolderPackage ? 'No se pudo crear la carpeta descargable' : 'No se pudo crear el ZIP'));
+      const label = isFolderPackage ? 'Carpeta' : 'ZIP';
+      toast(`${label} ${archive.progress || 0}% (${archive.completed || 0}/${archive.total || 0})`, 'info');
       await new Promise(resolve => setTimeout(resolve, 2500));
-      const statusResponse = await fetch(`${API}/api/job/${jobId}/archive/status`);
-      if (!statusResponse.ok) throw new Error('No se pudo leer el estado del ZIP');
+      const statusResponse = await fetch(`${API}/api/job/${jobId}/archive/status${modeParam}`);
+      if (!statusResponse.ok) throw new Error(isFolderPackage ? 'No se pudo leer el estado de la carpeta' : 'No se pudo leer el estado del ZIP');
       archive = (await statusResponse.json()).data;
     }
 
-    const a = document.createElement('a');
-    a.href = `${API}/api/job/${jobId}/archive/download`;
-    a.download = archive.friendly_name || `${playlistTitle}.zip`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    toast('ZIP listo', 'success');
+    const downloadUrl = `${API}/api/job/${jobId}/archive/download${modeParam}`;
+    toast(isFolderPackage ? 'Descargando carpeta' : 'ZIP listo', 'success');
+    window.location.href = downloadUrl;
   } catch (e) {
-    toast(e.message || 'No se pudo comprimir la lista', 'error');
+    toast(e.message || (isFolderPackage ? 'No se pudo descargar la carpeta' : 'No se pudo comprimir la lista'), 'error');
   }
 }
 

@@ -571,11 +571,16 @@ def record_job_track(event, job: dict) -> None:
 
     create_track_from_message(event.message, job)
 
-def get_archive_state(job: dict) -> dict:
-    archive = job.get("archive")
+def archive_state_key(mode: str = "flat") -> str:
+    return "folder_archive" if mode == "folder" else "archive"
+
+def get_archive_state(job: dict, mode: str = "flat") -> dict:
+    key = archive_state_key(mode)
+    archive = job.get(key)
     if not archive:
         archive = {
             "status": "idle",
+            "mode": "folder" if mode == "folder" else "flat",
             "progress": 0,
             "completed": 0,
             "total": 0,
@@ -583,21 +588,23 @@ def get_archive_state(job: dict) -> dict:
             "file_name": None,
             "error": None,
         }
-        job["archive"] = archive
+        job[key] = archive
     return archive
 
-async def build_local_archive(job: dict) -> None:
-    archive = get_archive_state(job)
+async def build_local_archive(job: dict, mode: str = "flat") -> None:
+    mode = "folder" if mode == "folder" else "flat"
+    archive = get_archive_state(job, mode)
     tracks = [t for t in job.get("tracks", []) if t.get("status") != "error"]
     archive.update({
         "status": "downloading",
+        "mode": mode,
         "progress": 1,
         "completed": 0,
         "total": len(tracks),
         "download_url": None,
         "error": None,
     })
-    job["message"] = "Descargando canciones para comprimir..."
+    job["message"] = "Descargando canciones para crear carpeta..." if mode == "folder" else "Descargando canciones para comprimir..."
     refresh_job_status(job)
 
     if not tracks:
@@ -623,10 +630,10 @@ async def build_local_archive(job: dict) -> None:
 
         archive["status"] = "zipping"
         archive["progress"] = 95
-        job["message"] = "Creando ZIP local..."
+        job["message"] = "Empaquetando carpeta..." if mode == "folder" else "Creando ZIP local..."
 
         playlist_title = safe_download_name(job.get("playlist_title") or "playlist", "playlist")
-        zip_path = DOWNLOADS_DIR / f"playlist_{job['id']}.zip"
+        zip_path = DOWNLOADS_DIR / f"{mode}_{job['id']}.zip"
         used_names = set()
         with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_STORED) as archive_file:
             for idx, track in enumerate(ready_tracks, start=1):
@@ -635,11 +642,15 @@ async def build_local_archive(job: dict) -> None:
                     continue
 
                 arcname = friendly_track_filename(track, idx)
+                if mode == "folder":
+                    arcname = f"{playlist_title}/{arcname}"
                 dedupe = 2
                 while arcname in used_names:
                     stem = Path(arcname).stem
                     ext = Path(arcname).suffix
-                    arcname = f"{stem} ({dedupe}){ext}"
+                    parent = str(Path(arcname).parent)
+                    file_name = f"{stem} ({dedupe}){ext}"
+                    arcname = f"{parent}/{file_name}" if parent != "." else file_name
                     dedupe += 1
                 used_names.add(arcname)
                 archive_file.write(source, arcname)
@@ -650,11 +661,11 @@ async def build_local_archive(job: dict) -> None:
             "completed": len(ready_tracks),
             "total": len(tracks),
             "file_name": zip_path.name,
-            "download_url": f"/api/job/{job['id']}/archive/download",
+            "download_url": f"/api/job/{job['id']}/archive/download?mode={mode}",
             "friendly_name": f"{playlist_title}.zip",
         })
-        job["message"] = "ZIP local listo."
-        print(f"✅ ZIP local listo: {archive['friendly_name']}")
+        job["message"] = "Carpeta lista para descargar." if mode == "folder" else "ZIP local listo."
+        print(f"✅ Paquete {mode} listo: {archive['friendly_name']}")
     except Exception as exc:
         archive.update({
             "status": "error",
@@ -1137,7 +1148,7 @@ async def get_job(job_id: str):
 
 
 @app.get("/api/job/{job_id}/zip")
-async def download_job_zip(job_id: str):
+async def download_job_zip(job_id: str, mode: str = "flat"):
     """Descarga el ZIP local cuando ya esta listo."""
     job = playlist_jobs.get(job_id)
     if not job:
@@ -1145,9 +1156,10 @@ async def download_job_zip(job_id: str):
 
     refresh_job_status(job)
     playlist_title = safe_download_name(job.get("playlist_title") or "playlist", "playlist")
-    archive = get_archive_state(job)
+    mode = "folder" if mode == "folder" else "flat"
+    archive = get_archive_state(job, mode)
     if archive.get("status") != "ready" or not archive.get("file_name"):
-        raise HTTPException(409, "El ZIP local aun no esta listo")
+        raise HTTPException(409, "La descarga aun no esta lista")
 
     zip_path = DOWNLOADS_DIR / str(archive["file_name"])
     if not zip_path.exists():
@@ -1162,12 +1174,13 @@ async def download_job_zip(job_id: str):
 
 
 @app.post("/api/job/{job_id}/archive/start")
-async def start_job_archive(job_id: str):
+async def start_job_archive(job_id: str, mode: str = "flat"):
     """Inicia la descarga paralela y compresion local de la playlist."""
     job = playlist_jobs.get(job_id)
     if not job:
         raise HTTPException(404, "Job no encontrado o expirado")
 
+    mode = "folder" if mode == "folder" else "flat"
     refresh_job_status(job)
     if not job.get("bot_finished"):
         raise HTTPException(409, "Espera a que el bot termine con Finished.")
@@ -1176,30 +1189,31 @@ async def start_job_archive(job_id: str):
     if not tracks:
         raise HTTPException(404, "No hay canciones para comprimir")
 
-    archive = get_archive_state(job)
+    archive = get_archive_state(job, mode)
     if archive.get("status") in {"downloading", "zipping"}:
         return {"type": "archive", "data": archive}
     if archive.get("status") == "ready" and archive.get("file_name"):
         return {"type": "archive", "data": archive}
 
-    task = asyncio.create_task(build_local_archive(job))
+    task = asyncio.create_task(build_local_archive(job, mode))
     download_tasks.add(task)
     task.add_done_callback(download_tasks.discard)
     return {"type": "archive", "data": archive}
 
 
 @app.get("/api/job/{job_id}/archive/status")
-async def get_job_archive_status(job_id: str):
+async def get_job_archive_status(job_id: str, mode: str = "flat"):
     job = playlist_jobs.get(job_id)
     if not job:
         raise HTTPException(404, "Job no encontrado o expirado")
     refresh_job_status(job)
-    return {"type": "archive", "data": get_archive_state(job)}
+    mode = "folder" if mode == "folder" else "flat"
+    return {"type": "archive", "data": get_archive_state(job, mode)}
 
 
 @app.get("/api/job/{job_id}/archive/download")
-async def download_job_archive(job_id: str):
-    return await download_job_zip(job_id)
+async def download_job_archive(job_id: str, mode: str = "flat"):
+    return await download_job_zip(job_id, mode)
 
 
 @app.post("/api/job/{job_id}/folder/start")
@@ -1311,6 +1325,7 @@ async def list_jobs():
             "expected_total": job.get("expected_total"),
             "zip_file": job.get("zip_file"),
             "archive": job.get("archive"),
+            "folder_archive": job.get("folder_archive"),
             "folder": job.get("folder"),
             "skipped": job.get("skipped", []),
             "tracks_preview": [

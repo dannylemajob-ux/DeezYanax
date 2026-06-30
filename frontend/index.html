@@ -926,6 +926,107 @@ header {
   pointer-events: none;
 }
 
+/* ── Auth ───────────────────────────────────────────────────────────────── */
+body:not(.authenticated) .app,
+body:not(.authenticated) #player {
+  display: none !important;
+}
+
+.auth-screen {
+  position: relative;
+  z-index: 1;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+body.authenticated .auth-screen {
+  display: none;
+}
+
+.login-panel {
+  width: min(420px, 100%);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 28px;
+  box-shadow: 0 18px 60px rgba(0,0,0,0.35);
+}
+
+.login-title {
+  font-size: 1.45rem;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+.login-sub {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  margin-bottom: 22px;
+}
+
+.login-field {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.login-field label {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+}
+
+.login-field input {
+  width: 100%;
+  padding: 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-family: var(--sans);
+  outline: none;
+}
+
+.login-field input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--glow);
+}
+
+.login-error {
+  min-height: 20px;
+  color: var(--red);
+  font-size: 0.85rem;
+  margin: 4px 0 14px;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.logout-btn {
+  padding: 7px 12px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.logout-btn:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
 /* ── Responsive ──────────────────────────────────────────────────────────── */
 @media (max-width: 600px) {
   header { flex-direction: column; gap: 14px; align-items: flex-start; }
@@ -943,6 +1044,27 @@ header {
 </head>
 <body>
 
+<div class="auth-screen" id="authScreen">
+  <form class="login-panel" id="loginForm" onsubmit="login(event)">
+    <div class="logo" style="margin-bottom:18px;">
+      <div class="logo-icon">🎵</div>
+      <div class="logo-text">Deez<span>Yanax</span></div>
+    </div>
+    <div class="login-title">Acceso privado</div>
+    <div class="login-sub">Inicia sesión para usar el downloader.</div>
+    <div class="login-field">
+      <label for="loginUser">Usuario</label>
+      <input id="loginUser" autocomplete="username" required/>
+    </div>
+    <div class="login-field">
+      <label for="loginPassword">Password</label>
+      <input id="loginPassword" type="password" autocomplete="current-password" required/>
+    </div>
+    <div class="login-error" id="loginError"></div>
+    <button class="download-btn final" id="loginBtn" type="submit" style="width:100%;">ENTRAR</button>
+  </form>
+</div>
+
 <div class="app">
 
   <!-- Header -->
@@ -951,9 +1073,12 @@ header {
       <div class="logo-icon">🎵</div>
       <div class="logo-text">Deez<span>Yanax</span></div>
     </div>
-    <div class="status-badge" id="statusBadge">
-      <div class="status-dot"></div>
-      <span id="statusText">Conectando...</span>
+    <div class="header-actions">
+      <div class="status-badge" id="statusBadge">
+        <div class="status-dot"></div>
+        <span id="statusText">Conectando...</span>
+      </div>
+      <button class="logout-btn" onclick="logout()">SALIR</button>
     </div>
   </header>
 
@@ -1053,6 +1178,8 @@ let currentMsgId = null;
 let currentButtons = [];
 let activeJobTimer = null;
 let latestJobs = {};
+let healthTimer = null;
+let authenticated = false;
 
 function isLocalApi() {
   try {
@@ -1067,15 +1194,94 @@ function canPickDirectory() {
   return window.isSecureContext && typeof window.showDirectoryPicker === 'function';
 }
 
+async function apiFetch(url, options = {}) {
+  const response = await fetch(url, {
+    ...options,
+    credentials: 'include',
+  });
+  if (response.status === 401) {
+    setAuthenticated(false);
+    throw new Error('Tu sesión expiró. Vuelve a iniciar sesión.');
+  }
+  return response;
+}
+
+function setAuthenticated(value) {
+  authenticated = value;
+  document.body.classList.toggle('authenticated', value);
+  if (value) {
+    checkHealth();
+    if (!healthTimer) healthTimer = setInterval(checkHealth, 15000);
+  } else {
+    if (healthTimer) clearInterval(healthTimer);
+    healthTimer = null;
+    latestJobs = {};
+    if (activeJobTimer) clearInterval(activeJobTimer);
+    activeJobTimer = null;
+  }
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────
-window.addEventListener('DOMContentLoaded', () => {
-  checkHealth();
-  setInterval(checkHealth, 15000);
+window.addEventListener('DOMContentLoaded', async () => {
+  await checkSession();
 });
+
+async function checkSession() {
+  try {
+    const r = await fetch(`${API}/api/auth/session`, { credentials: 'include' });
+    const data = await r.json();
+    setAuthenticated(Boolean(data.authenticated));
+    if (!data.authenticated) document.getElementById('loginUser').focus();
+  } catch (_) {
+    setAuthenticated(false);
+  }
+}
+
+async function login(event) {
+  event.preventDefault();
+  const username = document.getElementById('loginUser').value.trim();
+  const password = document.getElementById('loginPassword').value;
+  const error = document.getElementById('loginError');
+  const btn = document.getElementById('loginBtn');
+  error.textContent = '';
+  btn.disabled = true;
+  btn.textContent = 'ENTRANDO...';
+  try {
+    const r = await fetch(`${API}/api/auth/login`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    if (!r.ok) {
+      let message = 'No se pudo iniciar sesión';
+      try {
+        const data = await r.json();
+        message = data.detail || message;
+      } catch (_) {}
+      throw new Error(message);
+    }
+    document.getElementById('loginPassword').value = '';
+    setAuthenticated(true);
+    toast('Sesión iniciada', 'success');
+  } catch (e) {
+    error.textContent = e.message || 'Login inválido';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'ENTRAR';
+  }
+}
+
+async function logout() {
+  try {
+    await fetch(`${API}/api/auth/logout`, { method: 'POST', credentials: 'include' });
+  } catch (_) {}
+  setAuthenticated(false);
+}
 
 async function checkHealth() {
   try {
-    const r = await fetch(`${API}/health`, { signal: AbortSignal.timeout(5000) });
+    const r = await fetch(`${API}/health`, { signal: AbortSignal.timeout(5000), credentials: 'include' });
     const d = await r.json();
     const badge = document.getElementById('statusBadge');
     const text  = document.getElementById('statusText');
@@ -1108,7 +1314,7 @@ async function setQuality(q, btn) {
 
   showLoading('Cambiando calidad...');
   try {
-    const r = await fetch(`${API}/api/quality`, {
+    const r = await apiFetch(`${API}/api/quality`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ quality: q }),
@@ -1140,7 +1346,7 @@ async function doSearch() {
   setLoading(true, `Buscando "${query}"...`);
 
   try {
-    const r = await fetch(`${API}/api/search`, {
+    const r = await apiFetch(`${API}/api/search`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ query, search_type: currentType }),
@@ -1169,7 +1375,7 @@ async function processLink() {
   setLoading(true, 'Procesando link...');
 
   try {
-    const r = await fetch(`${API}/api/link`, {
+    const r = await apiFetch(`${API}/api/link`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url }),
@@ -1196,7 +1402,7 @@ async function selectButton(messageId, rowIdx, colIdx, btnText) {
   setLoading(true, `Descargando "${btnText}"...`);
 
   try {
-    const r = await fetch(`${API}/api/select`, {
+    const r = await apiFetch(`${API}/api/select`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1261,7 +1467,7 @@ function startJobPolling(jobId) {
 
 async function pollJob(jobId) {
   try {
-    const r = await fetch(`${API}/api/job/${jobId}`);
+    const r = await apiFetch(`${API}/api/job/${jobId}`);
     if (!r.ok) throw new Error('No se pudo leer el estado');
     const data = await r.json();
     renderJob(data.data);
@@ -1428,7 +1634,7 @@ function renderJobBotButtons(jobId, card) {
 async function clickJobButton(jobId, messageId, rowIdx, colIdx, label) {
   toast(`Ejecutando ${label}`, 'info');
   try {
-    const r = await fetch(`${API}/api/job/${jobId}/button`, {
+    const r = await apiFetch(`${API}/api/job/${jobId}/button`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1487,7 +1693,7 @@ async function saveSongsToFolder(jobId) {
       while (nextIndex < saveTracks.length) {
         const track = saveTracks[nextIndex++];
         const fileName = safeFileName(track.friendly_name || track.original_name || track.file_name || `${track.title}.mp3`);
-        const response = await fetch(`${API}/api/job/${jobId}/track/${track.id}`);
+        const response = await apiFetch(`${API}/api/job/${jobId}/track/${track.id}`);
         if (!response.ok) throw new Error(`No se pudo guardar ${track.title}`);
         const blob = await response.blob();
         const fileHandle = await folderHandle.getFileHandle(fileName, { create: true });
@@ -1514,7 +1720,7 @@ async function saveSongsToBackendFolder(jobId) {
   startJobPolling(jobId);
 
   try {
-    const startResponse = await fetch(`${API}/api/job/${jobId}/folder/start`, { method: 'POST' });
+    const startResponse = await apiFetch(`${API}/api/job/${jobId}/folder/start`, { method: 'POST' });
     if (!startResponse.ok) {
       let message = 'No se pudo iniciar la carpeta local';
       try {
@@ -1529,7 +1735,7 @@ async function saveSongsToBackendFolder(jobId) {
       if (folder.status === 'error') throw new Error(folder.error || 'No se pudo crear la carpeta');
       toast(`Carpeta ${folder.progress || 0}% (${folder.completed || 0}/${folder.total || 0})`, 'info');
       await new Promise(resolve => setTimeout(resolve, 2500));
-      const statusResponse = await fetch(`${API}/api/job/${jobId}/folder/status`);
+      const statusResponse = await apiFetch(`${API}/api/job/${jobId}/folder/status`);
       if (!statusResponse.ok) throw new Error('No se pudo leer el estado de la carpeta');
       folder = (await statusResponse.json()).data;
     }
@@ -1537,7 +1743,7 @@ async function saveSongsToBackendFolder(jobId) {
     const folderName = folder.folder_name || 'playlist';
     toast(`Carpeta lista en Descargas: ${folderName}`, 'success');
     try {
-      await fetch(`${API}/api/job/${jobId}/folder/open`, { method: 'POST' });
+      await apiFetch(`${API}/api/job/${jobId}/folder/open`, { method: 'POST' });
     } catch (_) {}
   } catch (e) {
     toast(e.message || 'No se pudo crear la carpeta local', 'error');
@@ -1559,7 +1765,7 @@ async function downloadArchivePackage(jobId, mode = 'flat') {
   startJobPolling(jobId);
 
   try {
-    const startResponse = await fetch(`${API}/api/job/${jobId}/archive/start${modeParam}`, { method: 'POST' });
+    const startResponse = await apiFetch(`${API}/api/job/${jobId}/archive/start${modeParam}`, { method: 'POST' });
     if (!startResponse.ok) {
       let message = isFolderPackage ? 'No se pudo iniciar la descarga de carpeta' : 'No se pudo iniciar el ZIP local';
       try {
@@ -1575,7 +1781,7 @@ async function downloadArchivePackage(jobId, mode = 'flat') {
       const label = isFolderPackage ? 'Carpeta' : 'ZIP';
       toast(`${label} ${archive.progress || 0}% (${archive.completed || 0}/${archive.total || 0})`, 'info');
       await new Promise(resolve => setTimeout(resolve, 2500));
-      const statusResponse = await fetch(`${API}/api/job/${jobId}/archive/status${modeParam}`);
+      const statusResponse = await apiFetch(`${API}/api/job/${jobId}/archive/status${modeParam}`);
       if (!statusResponse.ok) throw new Error(isFolderPackage ? 'No se pudo leer el estado de la carpeta' : 'No se pudo leer el estado del ZIP');
       archive = (await statusResponse.json()).data;
     }

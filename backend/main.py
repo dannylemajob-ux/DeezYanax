@@ -27,6 +27,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from telethon import TelegramClient, events
+from telethon.errors import BotResponseTimeoutError
 from telethon.sessions import StringSession
 from telethon.tl.functions.messages import GetBotCallbackAnswerRequest
 from telethon.tl.types import KeyboardButtonCallback
@@ -314,7 +315,23 @@ def upsert_bot_card(job: dict, msg) -> None:
             return
     cards.append(card)
 
+def clean_bot_title(value: str) -> str:
+    value = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", value or "")
+    value = re.sub(r"\s+", " ", value).strip(" -")
+    return value
+
 def extract_preview_title(msg) -> str:
+    text = msg.text or ""
+    for pattern in [
+        r"(?:💽\s*)?Album:\s*(.+)",
+        r"(?:🎵\s*)?Playlist:\s*(.+)",
+    ]:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            value = clean_bot_title(match.group(1).splitlines()[0])
+            if value and not value.lower().startswith(("http", "spotify")):
+                return value
+
     candidates = []
     preview = getattr(msg, "web_preview", None)
     if preview:
@@ -1456,11 +1473,15 @@ async def click_job_button(job_id: str, req: JobButtonRequest):
     active_link_job_id = job_id
     job["status"] = "processing"
     job["message"] = f"Ejecutando: {btn.text}"
-    await tg(GetBotCallbackAnswerRequest(
-        peer=entity,
-        msg_id=req.message_id,
-        data=btn.data,
-    ))
+    try:
+        await tg(GetBotCallbackAnswerRequest(
+            peer=entity,
+            msg_id=req.message_id,
+            data=btn.data,
+        ))
+    except BotResponseTimeoutError:
+        job["message"] = f"Ejecutando: {btn.text}. Esperando respuesta del bot..."
+        job["callback_warning"] = "Telegram no respondió el callback a tiempo, pero la acción pudo haberse iniciado."
     return {"type": "job", "data": job}
 
 
